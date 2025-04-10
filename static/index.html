@@ -1,0 +1,255 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Прогноз строительства</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            margin: 2rem;
+            background: linear-gradient(to right, #f0f4f8, #d9e2ec);
+            color: #333;
+        }
+
+        h1 {
+            text-align: center;
+            color: #2f3e46;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .form-section, .summary {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+
+            .form-section:hover {
+                transform: scale(1.01);
+            }
+
+        label {
+            display: block;
+            margin-top: 1rem;
+            font-weight: bold;
+        }
+
+        input[type="number"], input[type="text"] {
+            width: 100%;
+            padding: 0.6rem;
+            margin-top: 0.2rem;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        button {
+            margin-top: 1.5rem;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            background-color: #3a86ff;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+            button:hover {
+                background-color: #265df2;
+            }
+
+        canvas {
+            background: white;
+            border-radius: 10px;
+            padding: 1rem;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+
+        .summary p {
+            margin: 0.6rem 0;
+            font-size: 1.1rem;
+        }
+
+        .summary span {
+            color: #0a9396;
+            font-weight: bold;
+        }
+
+        #loader {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(255, 255, 255, 0.8);
+        }
+
+            #loader .spinner {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 60px;
+                height: 60px;
+                border: 6px solid #3a86ff;
+                border-top: 6px solid transparent;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+            }
+
+        @keyframes spin {
+            to {
+                transform: translate(-50%, -50%) rotate(360deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="loader"><div class="spinner"></div></div>
+
+    <div class="container">
+        <h1>Прогноз строительных условий</h1>
+
+        <div class="form-section">
+            <label>Город: <input type="text" id="city" required></label>
+            <label>Регион: <input type="text" id="region" required></label>
+            <label>Страна: <input type="text" id="country" required></label>
+            <label>Минимальная температура: <input type="number" id="min_temp" value="5" step="0.1"></label>
+            <label>Макс. ветер (м/с): <input type="number" id="max_wind" value="4" step="0.1"></label>
+            <label>Макс. осадки (мм): <input type="number" id="max_precip" value="0.1" step="0.1"></label>
+            <label>Скорость печати (этажей/ч): <input type="number" id="print_speed" value="0.5" step="0.1"></label>
+            <button onclick="submitForecast()">Рассчитать прогноз</button>
+        </div>
+
+        <div class="summary">
+            <p><strong>Локация:</strong> <span id="location-name">(не выбрана)</span></p>
+            <p><strong>Всего рабочих часов:</strong> <span id="total-hours">-</span></p>
+            <p><strong>Общий строительный объём:</strong> <span id="total-output">-</span></p>
+        </div>
+
+        <canvas id="calendarChart" width="1000" height="400"></canvas>
+    </div>
+
+    <script>
+        let calendarChart = null;
+
+        function showLoader(show) {
+            document.getElementById("loader").style.display = show ? "block" : "none";
+        }
+
+        async function waitUntilWeatherLoaded(location_id, retries = 20) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const result = await axios.post("http://127.0.0.1:8001/printer/forecast-hours/", {
+                        location_id,
+                        min_temp: 0,
+                        max_wind: 100,
+                        max_precip: 100,
+                        print_speed: 1
+                    });
+                    if (result.data && result.data.calendar.length > 0) {
+                        return true;
+                    }
+                } catch (e) { }
+                await new Promise(r => setTimeout(r, 3000));
+            }
+            throw new Error("Погодные данные не загрузились вовремя.");
+        }
+
+        function submitForecast() {
+            const city = document.getElementById("city").value;
+            const region = document.getElementById("region").value;
+            const country = document.getElementById("country").value;
+            const min_temp = parseFloat(document.getElementById("min_temp").value);
+            const max_wind = parseFloat(document.getElementById("max_wind").value);
+            const max_precip = parseFloat(document.getElementById("max_precip").value);
+            const print_speed = parseFloat(document.getElementById("print_speed").value);
+
+            showLoader(true);
+
+            axios.post("http://127.0.0.1:8001/location/", { city, region, country })
+                .then(res => {
+                    const location_id = res.data.id;
+                    document.getElementById("location-name").textContent = `${city}, ${region}, ${country}`;
+                    return waitUntilWeatherLoaded(location_id).then(() => location_id);
+                })
+                .then(location_id => {
+                    return axios.post("http://127.0.0.1:8001/printer/forecast-hours/", {
+                        location_id,
+                        min_temp,
+                        max_wind,
+                        max_precip,
+                        print_speed
+                    });
+                })
+                .then(response => {
+                    const data = response.data;
+                    document.getElementById("total-hours").textContent = data.total_hours;
+                    document.getElementById("total-output").textContent = data.total_output.toFixed(2);
+
+                    const labels = data.calendar.map(entry => entry.date);
+                    const values = data.calendar.map(entry => entry.hours);
+
+                    const ctx = document.getElementById('calendarChart').getContext('2d');
+                    if (calendarChart) calendarChart.destroy();
+
+                    calendarChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Часы работы в день',
+                                data: values,
+                                backgroundColor: 'rgba(58, 134, 255, 0.6)',
+                                borderColor: '#3a86ff',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            animation: { duration: 800 },
+                            responsive: true,
+                            plugins: {
+                                legend: { display: true, position: 'top' },
+                                tooltip: { mode: 'index', intersect: false }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Часы'
+                                    }
+                                },
+                                x: {
+                                    ticks: {
+                                        maxRotation: 90,
+                                        minRotation: 45,
+                                        maxTicksLimit: 15
+                                    }
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(error => {
+                    alert("Ошибка: " + error.message);
+                    console.error(error);
+                })
+                .finally(() => {
+                    showLoader(false);
+                });
+        }
+    </script>
+</body>
+</html>
